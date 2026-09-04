@@ -1,0 +1,42 @@
+[Unit]
+Description=Telegram private-message relay bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=telegram-relay-bot
+Group=telegram-relay-bot
+EnvironmentFile=/etc/telegram-relay-bot/config
+LoadCredential=bot-token:/etc/telegram-relay-bot/token
+StateDirectory=telegram-relay-bot
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/telegram-relay-bot
+ExecStart=/usr/bin/python3 -I /opt/telegram-relay-bot/bot.py
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=40s
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

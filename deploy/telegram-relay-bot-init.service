@@ -1,0 +1,24 @@
+[Unit]
+Description=Initialize Telegram relay bot and discard old test updates
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=telegram-relay-bot
+Group=telegram-relay-bot
+EnvironmentFile=/etc/telegram-relay-bot/config
+LoadCredential=bot-token:/etc/telegram-relay-bot/token
+StateDirectory=telegram-relay-bot
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/telegram-relay-bot
+ExecStart=/usr/bin/python3 -I /opt/telegram-relay-bot/bot.py --init
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/telegram-relay-bot
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
