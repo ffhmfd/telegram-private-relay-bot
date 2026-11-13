@@ -1,0 +1,27 @@
+:root {
+  color-scheme: light;
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: #243c50;
+  background: #eef5fa;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100svh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 16px; }
+main { width: min(100%, 460px); background: #fff; padding: 40px 32px 32px; border-top: 5px solid #2479ad; border-radius: 8px; }
+.mail-mark { font-size: 44px; line-height: 1; color: #2479ad; margin-bottom: 24px; }
+h1 { font-size: clamp(24px, 6vw, 29px); line-height: 1.35; margin: 0 0 12px; letter-spacing: -.04em; }
+p { font-size: 15px; line-height: 1.8; }
+.intro { margin: 0 0 24px; }
+section { padding: 20px 0; border-top: 1px solid #dce6ed; border-bottom: 1px solid #dce6ed; }
+#challenge { min-height: 0; }
+#status { margin: 12px 0; overflow-wrap: anywhere; }
+#status[data-state="error"] { color: #a73537; }
+#status[data-state="success"] { color: #176b4d; font-weight: 600; }
+button { border: 0; border-radius: 5px; background: #206d9d; color: white; padding: 12px 20px; font: inherit; min-height: 44px; cursor: pointer; }
+button:hover { background: #175479; }
+button:focus-visible { outline: 3px solid #2479ad; outline-offset: 4px; }
+button:disabled { opacity: .65; cursor: wait; }
+[hidden] { display: none !important; }
+.note { margin: 24px 0 0; font-size: 14px; color: #536c7f; }
+footer { margin-top: 24px; font-size: 12px; color: #536c7f; text-align: center; }
+noscript { display: block; margin-top: 16px; color: #a73537; }
+@media (max-width: 380px) { main { padding: 28px 16px; } }

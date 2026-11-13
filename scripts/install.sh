@@ -6,7 +6,7 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-for command_name in python3 systemctl useradd install; do
+for command_name in python3 systemctl systemd-run useradd install; do
   command -v "${command_name}" >/dev/null 2>&1 || {
     echo "Missing required command: ${command_name}" >&2
     exit 1
@@ -17,7 +17,7 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR=/opt/telegram-relay-bot
 CONFIG_DIR=/etc/telegram-relay-bot
 SERVICE_USER=telegram-relay-bot
-FIRST_INSTALL=0
+FIRST_INSTALL="$(python3 "${PROJECT_DIR}/scripts/install_preflight.py" "${CONFIG_DIR}" "${APP_DIR}" /var/lib/telegram-relay-bot)"
 BOT_TOKEN=
 OWNER_CHAT_ID=
 
@@ -32,7 +32,15 @@ fi
 
 install -d -o root -g root -m 0755 "${APP_DIR}"
 install -d -o root -g root -m 0700 "${CONFIG_DIR}"
-install -o root -g root -m 0755 "${PROJECT_DIR}/bot.py" "${APP_DIR}/bot.py"
+install -d -o root -g root -m 0755 "${APP_DIR}/web"
+for file in bot.py verification.py; do
+  install -o root -g root -m 0644 "${PROJECT_DIR}/${file}" "${APP_DIR}/${file}.new"
+  mv -f "${APP_DIR}/${file}.new" "${APP_DIR}/${file}"
+done
+for file in verify.html verify.css verify.js; do
+  install -o root -g root -m 0644 "${PROJECT_DIR}/web/${file}" "${APP_DIR}/web/${file}.new"
+  mv -f "${APP_DIR}/web/${file}.new" "${APP_DIR}/web/${file}"
+done
 install -o root -g root -m 0644 \
   "${PROJECT_DIR}/deploy/telegram-relay-bot.service" \
   /etc/systemd/system/telegram-relay-bot.service
@@ -40,10 +48,12 @@ install -o root -g root -m 0644 \
   "${PROJECT_DIR}/deploy/telegram-relay-bot-init.service" \
   /etc/systemd/system/telegram-relay-bot-init.service
 install -o root -g root -m 0644 \
+  "${PROJECT_DIR}/deploy/telegram-relay-verify.service" \
+  /etc/systemd/system/telegram-relay-verify.service
+install -o root -g root -m 0644 \
   "${PROJECT_DIR}/deploy/config.example" "${CONFIG_DIR}/config.example"
 
-if [[ ! -s "${CONFIG_DIR}/token" || ! -s "${CONFIG_DIR}/config" ]]; then
-  FIRST_INSTALL=1
+if [[ ${FIRST_INSTALL} -eq 1 ]]; then
   read -r -s -p "Telegram Bot Token: " BOT_TOKEN
   echo
   read -r -p "Administrator Telegram User ID: " OWNER_CHAT_ID
@@ -74,11 +84,28 @@ fi
 systemctl daemon-reload
 systemd-analyze verify \
   /etc/systemd/system/telegram-relay-bot.service \
-  /etc/systemd/system/telegram-relay-bot-init.service
+  /etc/systemd/system/telegram-relay-bot-init.service \
+  /etc/systemd/system/telegram-relay-verify.service
 
 if [[ ${FIRST_INSTALL} -eq 1 ]]; then
   systemctl stop telegram-relay-bot.service 2>/dev/null || true
   systemctl start telegram-relay-bot-init.service
+fi
+
+run_verify_check() {
+  # Let systemd parse its own EnvironmentFile syntax, including whitespace,
+  # quoting and continuations. Never source the file as a shell program.
+  systemd-run --quiet --wait --pipe --collect \
+    --property="EnvironmentFile=${CONFIG_DIR}/config" \
+    /usr/bin/python3 -E -s -B "${APP_DIR}/verification.py" "$1"
+}
+
+VERIFY_MODE="$(run_verify_check --check-config)"
+if [[ "${VERIFY_MODE}" == enabled ]]; then
+  systemctl enable telegram-relay-verify.service
+  systemctl restart telegram-relay-verify.service
+  run_verify_check --check-ready
+  systemctl is-active --quiet telegram-relay-verify.service
 fi
 
 systemctl enable telegram-relay-bot.service

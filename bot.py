@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import random
+import re
 import signal
 import sqlite3
 import sys
@@ -17,6 +18,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+from verification import VerificationStore, verification_url
 
 
 LOG = logging.getLogger("telegram-relay-bot")
@@ -114,6 +117,7 @@ class Store:
                 ON rate_events(sender_chat_id, created_at);
             """
         )
+        self.verification = VerificationStore(self.db)
 
     def close(self) -> None:
         self.db.close()
@@ -152,6 +156,7 @@ class Store:
     def block(self, sender_id: int, now: int) -> None:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO blocked_users VALUES(?, ?)", (sender_id, now))
+            self.verification.revoke(sender_id)
 
     def unblock(self, sender_id: int) -> None:
         with self.db:
@@ -181,6 +186,7 @@ class Store:
                 "DELETE FROM message_map WHERE created_at<?", (now - retention_days * 86400,)
             )
             self.db.execute("DELETE FROM rate_events WHERE created_at<=?", (now - rate_window,))
+        self.verification.cleanup(now)
 
 
 @dataclass(frozen=True)
@@ -190,14 +196,17 @@ class Config:
     retention_days: int = 30
     rate_count: int = 20
     rate_window: int = 60
+    verification_url: str = ""
 
 
 class RelayBot:
-    def __init__(self, api: Any, store: Store, config: Config, clock: Callable[[], float] = time.time):
+    def __init__(self, api: Any, store: Store, config: Config, clock: Callable[[], float] = time.time,
+                 bot_id: int = 0):
         self.api = api
         self.store = store
         self.config = config
         self.clock = clock
+        self.bot_id = bot_id
 
     def api_call(self, method: str, payload: dict[str, Any], attempts: int = 4) -> Any:
         for attempt in range(attempts):
@@ -262,12 +271,56 @@ class RelayBot:
             "sendMessage",
             {
                 "chat_id": self.config.owner_id,
-                "text": "请回复某条来信来匿名答复。回复来信并发送 /block 可封禁，/unblock 可解封。",
+                "text": "请回复某条来信来匿名答复。回复来信并发送 /block 可封禁，/unblock 可解封。\n恢复旧映射：请选中机器人生成的旧“📨 新来信”身份卡片，回复 /recover；不要选择联系人发送的正文或转发副本。",
             },
         )
 
+    def recover_mapping(self, message: dict[str, Any]) -> None:
+        # Explicit owner action only: copied user text can resemble a header,
+        # so never infer a destination automatically during ordinary replies.
+        reply = message.get("reply_to_message") or {}
+        author = reply.get("from") or {}
+        text = reply.get("text") or ""
+        match = re.fullmatch(
+            r"📨 新来信\n昵称：[^\n]*\n用户名：[^\n]*\n"
+            r"用户 ID：([1-9][0-9]{0,15})\n消息 ID：([1-9][0-9]{0,15})\n"
+            r"类型：(text|photo|video|animation|audio|voice|video_note|document|sticker|"
+            r"location|venue|contact|poll|dice|live_photo|其他)", text
+        )
+        valid = (
+            self.bot_id > 0 and author.get("id") == self.bot_id
+            and author.get("is_bot") is True and not reply.get("forward_origin")
+            and not reply.get("forward_date") and not reply.get("reply_to_message")
+            and isinstance(reply.get("message_id"), int) and reply["message_id"] > 0
+            and match is not None
+        )
+        if not valid:
+            self.best_effort("sendMessage", {
+                "chat_id": self.config.owner_id,
+                "text": "无法恢复：请直接回复本机器人原来的“📨 新来信”身份卡片并发送 /recover。请选择含用户 ID、消息 ID 的卡片，不要选正文或转发副本。",
+            })
+            return
+        sender_id, sender_message_id = int(match[1]), int(match[2])
+        if sender_id >= 2**52 or sender_id in (self.config.owner_id, self.bot_id):
+            self.best_effort("sendMessage", {"chat_id": self.config.owner_id, "text": "无法恢复：卡片用户 ID 无效。"})
+            return
+        owner_message_id = reply["message_id"]
+        existing = self.store.target_for(owner_message_id)
+        if existing and existing != (sender_id, sender_message_id):
+            self.best_effort("sendMessage", {"chat_id": self.config.owner_id, "text": "恢复已停止：卡片与现有映射冲突，未修改数据库。"})
+            return
+        self.store.add_mapping([owner_message_id], sender_id, sender_message_id, int(self.clock()))
+        LOG.info("owner-requested mapping recovery completed")
+        self.best_effort("sendMessage", {
+            "chat_id": self.config.owner_id,
+            "text": f"✅ 已恢复这张身份卡片 → 用户 {sender_id} 的回复映射，未向对方发消息。请继续回复这张原卡片来联系对方；其下方旧正文的映射尚未恢复。",
+        })
+
     def handle_owner(self, message: dict[str, Any]) -> None:
         command = self.command(message)
+        if command == "/recover":
+            self.recover_mapping(message)
+            return
         if command in ("/start", "/help"):
             self.owner_help()
             return
@@ -317,13 +370,25 @@ class RelayBot:
         chat_id = int((message.get("chat") or {}).get("id", 0))
         if not sender_id or sender.get("is_bot"):
             return
-        if self.command(message) in ("/start", "/help"):
-            self.sender_help(chat_id)
-            return
         if self.store.is_blocked(sender_id):
             self.best_effort("sendMessage", {"chat_id": chat_id, "text": "该消息暂时无法送达。"})
             return
         now = int(self.clock())
+        if self.config.verification_url and not self.store.verification.verified(sender_id, now):
+            raw = self.store.verification.issue(sender_id, now)
+            if raw:
+                self.best_effort("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": "为减少广告，请先完成人机验证。链接 10 分钟内有效；验证通过后请重新发送留言，30 天内无需重复验证。",
+                    "reply_markup": {"inline_keyboard": [[{
+                        "text": "🛡 点击验证",
+                        "url": self.config.verification_url + "/verify#" + raw,
+                    }]]},
+                })
+            return
+        if self.command(message) in ("/start", "/help"):
+            self.sender_help(chat_id)
+            return
         if not self.store.consume_rate(
             sender_id, now, self.config.rate_count, self.config.rate_window
         ):
@@ -417,6 +482,7 @@ def load_config() -> Config:
         retention_days=positive_int("MAPPING_RETENTION_DAYS", 30),
         rate_count=positive_int("RATE_LIMIT_COUNT", 20),
         rate_window=positive_int("RATE_LIMIT_WINDOW_SECONDS", 60),
+        verification_url=verification_url(os.environ.get("VERIFICATION_URL", "")),
     )
 
 
@@ -437,7 +503,7 @@ def run(api: TelegramAPI, store: Store, config: Config) -> None:
     if webhook.get("url"):
         raise SystemExit("a webhook is configured; run bot.py --init once before starting")
     LOG.info("starting @%s", me.get("username", "unknown"))
-    bot = RelayBot(api, store, config)
+    bot = RelayBot(api, store, config, bot_id=int(me["id"]))
     stopped = False
 
     def stop(_signum: int, _frame: object) -> None:

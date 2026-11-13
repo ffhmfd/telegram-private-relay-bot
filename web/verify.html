@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>私信验证</title>
+  <link rel="stylesheet" href="/verify.css">
+  <script src="/verify.js" defer></script>
+</head>
+<body>
+  <main data-sitekey="{{SITE_KEY}}">
+    <div class="mail-mark" aria-hidden="true">✉</div>
+    <h1>让留言顺利送达</h1>
+    <p class="intro">先完成一次人机验证，帮助我们减少自动广告。</p>
+    <section aria-label="人机验证">
+      <div id="challenge"></div>
+      <p id="status" role="status" aria-live="polite">正在检查验证链接…</p>
+      <button id="retry" type="button" hidden>重新验证</button>
+    </section>
+    <p class="note">通过后，请回到 Telegram <strong>重新发送留言</strong>。<br>验证有效期为 30 天。</p>
+    <noscript>请启用 JavaScript，再从机器人消息中打开验证链接。</noscript>
+  </main>
+  <footer>私信验证由 Cloudflare Turnstile 提供</footer>
+</body>
+</html>

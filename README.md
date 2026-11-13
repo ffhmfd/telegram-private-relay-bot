@@ -2,6 +2,8 @@
 
 一个轻量、安全、零第三方 Python 依赖的 Telegram 私信中转机器人。
 
+当前版本：**v1.1.0**，新增可选 Cloudflare Turnstile 人机验证。详见 [更新记录](CHANGELOG.md)。
+
 其他用户私聊机器人后，管理员会收到发送者身份卡片和原消息副本；管理员直接回复该消息，即可通过机器人匿名答复。
 
 作者：[ffhmfd](https://github.com/ffhmfd) · [MIT License](LICENSE)
@@ -12,12 +14,14 @@
 - 显示来信者昵称、用户名、Telegram User ID 和消息类型
 - 支持文字、图片、视频、文件、语音、贴纸、位置、联系人及投票等常见消息
 - `/block`、`/unblock` 管理员封禁命令
+- 可选 Cloudflare Turnstile 验证：首次来信先验证，通过后 30 天免重复验证
+- `/recover` 管理员回复旧身份卡片，恢复过期的回复映射
 - 默认每位发送者最多 20 条消息/60 秒
 - SQLite 持久化回复映射，默认保留 30 天
 - 不下载或保存消息正文及媒体文件
 - systemd 自动启动和安全沙箱
 - Bot Token 通过 systemd credential 传入，不出现在源码、命令行或普通环境变量中
-- 使用 `getUpdates` 长轮询，无需域名、HTTPS 证书或入站端口
+- 使用 `getUpdates` 长轮询；启用 Turnstile 时，验证页面需要域名和 HTTPS
 
 ## 环境要求
 
@@ -77,6 +81,69 @@ sudo bash scripts/install.sh
 - 回复旧来信并发送 `/unblock`：解除封禁
 
 管理员单独发送且没有回复来信的内容不会被转发。
+
+## 启用 Cloudflare Turnstile
+
+机器人默认兼容原有直接留言方式。配置 `VERIFICATION_URL` 后，所有未验证
+的发送者（包括以前联系过的人）必须先验证；管理员回复不受影响。
+未验证的留言不会转发或缓存，验证成功后需要重新发送。
+
+1. 在 Cloudflare 控制台的 **Turnstile → Add widget** 创建 Managed 小组件。
+   Hostname 填验证子域名（例如 `verify.example.com`），关闭 Pre-clearance。
+2. 为该子域名设置指向 VPS 的 A 记录。在下面的配置中使用同一域名。
+3. 运行安装脚本更新程序，再在 `/etc/telegram-relay-bot/config` 添加：
+
+   ```ini
+   VERIFICATION_URL=https://verify.example.com
+   TURNSTILE_SITE_KEY=从控制台复制的SiteKey
+   VERIFY_PORT=8765
+   ```
+
+4. 使用 `sudoedit /etc/telegram-relay-bot/turnstile-secret` 写入一行 Secret Key
+   （不加变量名），然后执行：
+
+   ```bash
+   sudo chown root:root /etc/telegram-relay-bot/turnstile-secret
+   sudo chmod 600 /etc/telegram-relay-bot/turnstile-secret /etc/telegram-relay-bot/config
+   ```
+
+5. 将 `deploy/verify.Caddyfile.example` 的站点块加入现有 Caddyfile，替换域名，
+   保留其他站点。使用 `sudo caddy validate --config /etc/caddy/Caddyfile` 检查，
+   再执行 `sudo systemctl reload caddy`。如果使用 Cloudflare DNS 代理，SSL/TLS
+   使用 **Full (strict)**，不要对验证 API 添加缓存规则。
+6. 再运行 `sudo bash scripts/install.sh`，安装脚本会启用验证服务。
+
+```bash
+sudo systemctl status telegram-relay-verify telegram-relay-bot
+sudo journalctl -u telegram-relay-verify --since today
+```
+
+验证服务只监听 `127.0.0.1:8765`，通过 systemd credential 读取 Secret Key。
+Python 以 `-E -s -B` 运行：忽略 Python 环境变量、用户 site-packages，禁止写入
+字节码；模块仅从 root 管理的程序目录和系统库加载。
+
+### 验证规则和故障排查
+
+- 验证链接 10 分钟有效，绑定生成链接的 Telegram 用户，成功后只使用一次。
+  转发链接只能帮助原用户验证，不能给打开者的其他账号授权。
+- 同一用户每 60 秒最多收到一个新链接；连续发送 `/start` 会受到此冷却限制。
+- 每个链接最多校验 5 次，每次至少间隔 3 秒；超限后回到机器人获取新链接。
+- 服务端检查 Cloudflare 的 `success`、hostname、action 和 cdata。
+  验证失败、服务异常、链接过期时，不会转交未验证用户的消息。
+- `/block` 会撤销已有验证和未使用的链接；解封后需要重新验证。
+- 验证通过后请重新发送留言。网页直接打开时会提示使用机器人提供的链接。
+- 遇到无法加载验证时，用系统浏览器打开机器人给出的**原链接**。
+  页面使用 URL fragment 传递随机凭据，加载后从地址栏移除，避免进入访问日志。
+- SQLite 增加验证到期时间和挑战摘要，不保存用户消息、网页 IP 或 Cloudflare Token。
+  过期记录随机器人每日维护清理。
+
+### 更新与回退
+
+更新前备份 `/opt/telegram-relay-bot`、systemd 服务文件、配置、Caddyfile，
+使用 SQLite backup API 备份数据库。更新代码后运行安装脚本，保留现有数据。
+回退时停止 `telegram-relay-verify`，恢复旧程序、服务文件、配置和 Caddyfile，
+执行 `systemctl daemon-reload` 并重启机器人。新增数据库表可保留；不要为了
+回退程序覆盖实时数据库，否则可能丢失更新后的消息映射。
 
 ## 服务管理命令
 
